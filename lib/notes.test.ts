@@ -1,9 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   NOTE_COLORS,
+  NOTES_STORAGE_KEY,
+  loadNotes,
   normalizeNote,
   parseNotes,
+  saveNotes,
 } from "@/lib/notes";
 
 describe("NOTE_COLORS", () => {
@@ -92,5 +95,40 @@ describe("parseNotes", () => {
         updatedAt: 9,
       },
     ]);
+  });
+});
+
+describe("loadNotes / saveNotes", () => {
+  const store = new Map<string, string>();
+
+  beforeEach(() => {
+    store.clear();
+    vi.stubGlobal("window", {
+      localStorage: {
+        getItem: (key: string) => store.get(key) ?? null,
+        setItem: (key: string, value: string) => {
+          store.set(key, value);
+        },
+      },
+    });
+  });
+
+  it("round-trips notes through localStorage", () => {
+    const notes = [
+      {
+        id: "1",
+        title: "A",
+        body: "B",
+        color: "amber" as const,
+        updatedAt: 42,
+      },
+    ];
+    saveNotes(notes);
+    expect(store.get(NOTES_STORAGE_KEY)).toBe(JSON.stringify(notes));
+    expect(loadNotes()).toEqual(notes);
+  });
+
+  it("loadNotes returns [] when empty", () => {
+    expect(loadNotes()).toEqual([]);
   });
 });

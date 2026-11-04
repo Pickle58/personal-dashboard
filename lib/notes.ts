@@ -48,3 +48,17 @@ export function parseNotes(raw: string | null): Note[] {
     return [];
   }
 }
+
+export function loadNotes(): Note[] {
+  if (typeof window === "undefined") return [];
+  try {
+    return parseNotes(window.localStorage.getItem(NOTES_STORAGE_KEY));
+  } catch {
+    return [];
+  }
+}
+
+export function saveNotes(notes: Note[]): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(NOTES_STORAGE_KEY, JSON.stringify(notes));
+}
