@@ -1,6 +1,6 @@
 # Personal Dashboard
 
-A Next.js personal dashboard with weather, calendar, todos, and news.
+A Next.js personal dashboard with weather, calendar, todos, news, and notes.
 
 ## Stack
 
@@ -8,7 +8,7 @@ A Next.js personal dashboard with weather, calendar, todos, and news.
 - Tailwind CSS + shadcn/ui
 - OpenWeatherMap (optional) with Open-Meteo fallback
 - The Guardian Open Platform for headlines
-- localStorage for todos and last weather location
+- localStorage for todos, notes, and last weather location
 
 ## Setup
 
@@ -35,3 +35,4 @@ API keys stay server-side in Route Handlers — never use `NEXT_PUBLIC_*` for th
 2. **Calendar** — current month with today highlighted in orange
 3. **To-Do** — add / complete / delete, persisted in `localStorage`
 4. **News** — six latest Guardian headlines with external links
+5. **Notes** — expandable named scratchpad notes with five accent colors (`slate`, `sky`, `amber`, `emerald`, `rose`), persisted in `localStorage`
