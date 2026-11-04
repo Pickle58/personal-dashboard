@@ -35,3 +35,13 @@ export type SavedLocation = {
   lon: number;
   label?: string;
 };
+
+export type NoteColor = "slate" | "sky" | "amber" | "emerald" | "rose";
+
+export type Note = {
+  id: string;
+  title: string;
+  body: string;
+  color: NoteColor;
+  updatedAt: number;
+};

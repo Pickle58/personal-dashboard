@@ -1,5 +1,6 @@
 import { CalendarWidget } from "@/components/widgets/calendar-widget";
 import { NewsWidget } from "@/components/widgets/news-widget";
+import { NotesWidget } from "@/components/widgets/notes-widget";
 import { TodoWidget } from "@/components/widgets/todo-widget";
 import { WeatherWidget } from "@/components/widgets/weather-widget";
 
@@ -10,6 +11,7 @@ export default function Home() {
       <CalendarWidget />
       <TodoWidget />
       <NewsWidget />
+      <NotesWidget />
     </div>
   );
 }
