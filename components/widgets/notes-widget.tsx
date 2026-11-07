@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ChevronDown, NotebookPen, Plus, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -14,7 +14,16 @@ import {
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
-import { NOTE_COLORS, loadNotes, saveNotes } from "@/lib/notes";
+import { ensureMigrated } from "@/lib/migrate-local";
+import {
+  NOTE_BODY_MAX,
+  NOTE_COLORS,
+  NOTE_TITLE_MAX,
+  createNote,
+  deleteNote,
+  fetchNotes,
+  patchNote,
+} from "@/lib/notes";
 import type { Note, NoteColor } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -53,51 +62,258 @@ function displayTitle(title: string): string {
   return title.trim() ? title : "Untitled";
 }
 
+type SaveState = {
+  revision: number;
+  timer: ReturnType<typeof setTimeout> | null;
+  inFlight: boolean;
+  dirty: boolean;
+};
+
 export function NotesWidget() {
   const [notes, setNotes] = useState<Note[] | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const notesRef = useRef<Note[] | null>(null);
+  const saves = useRef(new Map<string, SaveState>());
+  const idAlias = useRef(new Map<string, string>());
+
+  function setNotesSync(next: Note[] | null) {
+    notesRef.current = next;
+    setNotes(next);
+  }
+
+  function saveState(id: string): SaveState {
+    const existing = saves.current.get(id);
+    if (existing) return existing;
+    const created: SaveState = {
+      revision: 0,
+      timer: null,
+      inFlight: false,
+      dirty: false,
+    };
+    saves.current.set(id, created);
+    return created;
+  }
+
+  function resolveId(id: string) {
+    return idAlias.current.get(id) ?? id;
+  }
+
+  function limitError(note: Note): string | null {
+    if (note.title.length > NOTE_TITLE_MAX) {
+      return "Keep the title to 200 characters.";
+    }
+    if (note.body.length > NOTE_BODY_MAX) {
+      return "Keep the note to 20,000 characters.";
+    }
+    return null;
+  }
+
+  async function sendSave(id: string, revision: number) {
+    const state = saveState(id);
+    const note = notesRef.current?.find((item) => item.id === id);
+    if (!note) return;
+    const blocked = limitError(note);
+    if (blocked) {
+      setSaveError(blocked);
+      return;
+    }
+    if (idAlias.current.get(id) === undefined && id !== resolveId(id)) return;
+    const serverId = resolveId(id);
+    if (serverId === id && idAlias.current.has(id) === false && note.id.startsWith("temp:")) {
+      state.dirty = true;
+      return;
+    }
+    if (state.inFlight) {
+      state.dirty = true;
+      return;
+    }
+    state.inFlight = true;
+    state.dirty = false;
+    const result = await patchNote(serverId, {
+      title: note.title,
+      body: note.body,
+      color: note.color,
+    });
+    state.inFlight = false;
+    if (!result.ok) {
+      if (result.status === 404) {
+        setNotesSync((notesRef.current ?? []).filter((item) => item.id !== id));
+        setExpandedId((current) => (current === id ? null : current));
+        return;
+      }
+      setSaveError("This note was not saved.");
+      return;
+    }
+    if (state.dirty || state.revision !== revision) {
+      state.dirty = false;
+      void sendSave(id, state.revision);
+    }
+  }
+
+  function scheduleSave(id: string, immediate: boolean) {
+    const state = saveState(id);
+    state.revision += 1;
+    const revision = state.revision;
+    if (state.timer) clearTimeout(state.timer);
+    state.timer = null;
+    if (immediate) {
+      void sendSave(id, revision);
+      return;
+    }
+    state.timer = setTimeout(() => {
+      state.timer = null;
+      void sendSave(id, revision);
+    }, 500);
+  }
+
+  function flush(id: string) {
+    const state = saves.current.get(id);
+    if (!state?.timer) return;
+    clearTimeout(state.timer);
+    state.timer = null;
+    state.revision += 1;
+    void sendSave(id, state.revision);
+  }
+
+  async function load() {
+    setLoadError(null);
+    setNotesSync(null);
+    try {
+      await ensureMigrated();
+    } catch {
+      setLoadError("Couldn't load. Try again.");
+      return;
+    }
+    const result = await fetchNotes();
+    if (!result.ok) {
+      setLoadError(result.error);
+      return;
+    }
+    setNotesSync(result.notes);
+  }
 
   useEffect(() => {
-    setNotes(loadNotes());
+    let cancelled = false;
+    void (async () => {
+      try {
+        await ensureMigrated();
+      } catch {
+        if (!cancelled) setLoadError("Couldn't load. Try again.");
+        return;
+      }
+      if (cancelled) return;
+      const result = await fetchNotes();
+      if (cancelled) return;
+      if (!result.ok) {
+        setLoadError(result.error);
+        return;
+      }
+      setNotesSync(result.notes);
+    })();
+    const onHide = () => {
+      for (const id of saves.current.keys()) flush(id);
+    };
+    window.addEventListener("pagehide", onHide);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("pagehide", onHide);
+    };
   }, []);
 
-  useEffect(() => {
-    if (notes === null) return;
-    saveNotes(notes);
-  }, [notes]);
-
-  function addNote() {
-    if (notes === null) return;
-    const note: Note = {
-      id: crypto.randomUUID(),
+  async function addNote() {
+    if (notesRef.current === null) return;
+    const tempId = `temp:${crypto.randomUUID()}`;
+    const draft: Note = {
+      id: tempId,
       title: "Untitled",
       body: "",
       color: "slate",
       updatedAt: Date.now(),
     };
-    setNotes([note, ...notes]);
-    setExpandedId(note.id);
-  }
-
-  function updateNote(id: string, patch: Partial<Pick<Note, "title" | "body" | "color">>) {
-    if (notes === null) return;
-    setNotes(
-      notes.map((note) =>
-        note.id === id
-          ? { ...note, ...patch, updatedAt: Date.now() }
-          : note
+    setNotesSync([draft, ...notesRef.current]);
+    setExpandedId(tempId);
+    setSaveError(null);
+    const result = await createNote();
+    if (!result.ok) {
+      setNotesSync((notesRef.current ?? []).filter((note) => note.id !== tempId));
+      setExpandedId((current) => (current === tempId ? null : current));
+      setSaveError("This note was not saved.");
+      return;
+    }
+    idAlias.current.set(tempId, result.note.id);
+    setNotesSync(
+      (notesRef.current ?? []).map((note) =>
+        note.id === tempId ? { ...result.note, title: note.title, body: note.body, color: note.color } : note
       )
     );
+    setExpandedId((current) => (current === tempId ? result.note.id : current));
+    const state = saves.current.get(tempId);
+    if (state?.dirty || state?.timer) {
+      if (state.timer) clearTimeout(state.timer);
+      saves.current.set(result.note.id, state);
+      saves.current.delete(tempId);
+      void sendSave(result.note.id, state.revision);
+    }
   }
 
-  function deleteNote(id: string) {
-    if (notes === null) return;
-    setNotes(notes.filter((note) => note.id !== id));
+  function updateNote(
+    id: string,
+    patch: Partial<Pick<Note, "title" | "body" | "color">>,
+    immediate: boolean
+  ) {
+    if (notesRef.current === null) return;
+    const next = notesRef.current.map((note) =>
+      note.id === id ? { ...note, ...patch, updatedAt: Date.now() } : note
+    );
+    setNotesSync(next);
+    const updated = next.find((note) => note.id === id);
+    if (!updated) return;
+    const blocked = limitError(updated);
+    if (blocked) {
+      setSaveError(blocked);
+      const state = saveState(id);
+      if (state.timer) clearTimeout(state.timer);
+      state.timer = null;
+      return;
+    }
+    setSaveError(null);
+    scheduleSave(id, immediate);
+  }
+
+  async function removeNote(id: string) {
+    if (notesRef.current === null) return;
+    const previous = notesRef.current;
+    const state = saves.current.get(id);
+    if (state?.timer) clearTimeout(state.timer);
+    setNotesSync(previous.filter((note) => note.id !== id));
     setExpandedId((current) => (current === id ? null : current));
+    const serverId = resolveId(id);
+    if (serverId.startsWith("temp:")) return;
+    const result = await deleteNote(serverId);
+    if (result.ok || result.status === 404) return;
+    setNotesSync(previous);
+    setSaveError("This note was not saved.");
   }
 
   function toggleExpanded(id: string) {
-    setExpandedId((current) => (current === id ? null : id));
+    setExpandedId((current) => {
+      if (current === id) {
+        flush(id);
+        return null;
+      }
+      if (current) flush(current);
+      return id;
+    });
+  }
+
+  function retrySave() {
+    const id = expandedId;
+    if (!id) return;
+    const state = saveState(id);
+    state.revision += 1;
+    void sendSave(id, state.revision);
   }
 
   return (
@@ -109,12 +325,12 @@ export function NotesWidget() {
               <NotebookPen className="size-4 text-primary" />
               Notes
             </CardTitle>
-            <CardDescription>Scratchpad saved in this browser</CardDescription>
+            <CardDescription>Scratchpad saved to your dashboard</CardDescription>
           </div>
           <Button
             type="button"
             size="icon"
-            onClick={addNote}
+            onClick={() => void addNote()}
             aria-label="Add note"
             disabled={notes === null}
           >
@@ -123,16 +339,33 @@ export function NotesWidget() {
         </div>
       </CardHeader>
       <CardContent>
-        {notes === null ? (
+        {saveError ? (
+          <div className="mb-3 space-y-2">
+            <p className="text-sm text-destructive">{saveError}</p>
+            {saveError === "This note was not saved." ? (
+              <Button type="button" variant="outline" size="sm" onClick={retrySave}>
+                Try again
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
+        {notes === null && !loadError ? (
           <Skeleton className="h-20 w-full" />
-        ) : notes.length === 0 ? (
+        ) : loadError ? (
+          <div className="space-y-2">
+            <p className="text-sm text-destructive">{loadError}</p>
+            <Button type="button" variant="outline" size="sm" onClick={() => void load()}>
+              Try again
+            </Button>
+          </div>
+        ) : notes && notes.length === 0 ? (
           <p className="text-sm text-muted-foreground">
             No notes yet. Add one to start a scratchpad.
           </p>
         ) : (
           <ScrollArea className="h-72 pr-3">
             <ul className="space-y-2">
-              {notes.map((note) => {
+              {notes?.map((note) => {
                 const expanded = expandedId === note.id;
                 const styles = COLOR_STYLES[note.color];
                 return (
@@ -164,7 +397,7 @@ export function NotesWidget() {
                         type="button"
                         variant="ghost"
                         size="icon-xs"
-                        onClick={() => deleteNote(note.id)}
+                        onClick={() => void removeNote(note.id)}
                         aria-label={`Delete "${displayTitle(note.title)}"`}
                       >
                         <Trash2 className="size-3.5 text-muted-foreground" />
@@ -175,16 +408,18 @@ export function NotesWidget() {
                         <Input
                           value={note.title}
                           onChange={(e) =>
-                            updateNote(note.id, { title: e.target.value })
+                            updateNote(note.id, { title: e.target.value }, false)
                           }
+                          onBlur={() => flush(note.id)}
                           aria-label="Note title"
                           placeholder="Untitled"
                         />
                         <textarea
                           value={note.body}
                           onChange={(e) =>
-                            updateNote(note.id, { body: e.target.value })
+                            updateNote(note.id, { body: e.target.value }, false)
                           }
+                          onBlur={() => flush(note.id)}
                           aria-label="Note body"
                           placeholder="Write a note…"
                           rows={4}
@@ -203,7 +438,7 @@ export function NotesWidget() {
                                 key={color}
                                 type="button"
                                 onClick={() =>
-                                  updateNote(note.id, { color })
+                                  updateNote(note.id, { color }, true)
                                 }
                                 aria-label={swatch.label}
                                 aria-pressed={selected}

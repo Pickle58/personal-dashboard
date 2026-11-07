@@ -14,8 +14,9 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import { LOCATION_STORAGE_KEY } from "@/lib/todos";
-import type { SavedLocation, WeatherData } from "@/lib/types";
+import { fetchLocation, saveLocation } from "@/lib/location";
+import { ensureMigrated } from "@/lib/migrate-local";
+import type { WeatherData } from "@/lib/types";
 
 type WeatherResponse = WeatherData & {
   lat?: number;
@@ -28,6 +29,7 @@ export function WeatherWidget() {
   const [city, setCity] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [saveWarning, setSaveWarning] = useState<string | null>(null);
 
   useEffect(() => {
     void loadInitialWeather();
@@ -37,9 +39,25 @@ export function WeatherWidget() {
     setLoading(true);
     setError(null);
 
-    const saved = readSavedLocation();
-    if (saved) {
-      const ok = await fetchWeather({ lat: saved.lat, lon: saved.lon });
+    try {
+      await ensureMigrated();
+    } catch {
+      setLoading(false);
+      setError("Couldn't load. Try again.");
+      return;
+    }
+
+    const saved = await fetchLocation();
+    if (!saved.ok) {
+      setLoading(false);
+      setError(saved.error);
+      return;
+    }
+    if (saved.location) {
+      const ok = await fetchWeather({
+        lat: saved.location.lat,
+        lon: saved.location.lon,
+      });
       if (ok) return;
     }
 
@@ -88,11 +106,14 @@ export function WeatherWidget() {
 
       setWeather(data);
       if (typeof data.lat === "number" && typeof data.lon === "number") {
-        writeSavedLocation({
+        const savedPlace = await saveLocation({
           lat: data.lat,
           lon: data.lon,
           label: data.locationName,
         });
+        setSaveWarning(
+          savedPlace.ok ? null : "This place was not saved for your other device."
+        );
       }
       setLoading(false);
       return true;
@@ -150,7 +171,17 @@ export function WeatherWidget() {
             <Skeleton className="h-20 w-full" />
           </div>
         ) : error ? (
-          <p className="text-sm text-destructive">{error}</p>
+          <div className="space-y-2">
+            <p className="text-sm text-destructive">{error}</p>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => void loadInitialWeather()}
+            >
+              Try again
+            </Button>
+          </div>
         ) : weather ? (
           <div className="space-y-4">
             <div>
@@ -163,6 +194,9 @@ export function WeatherWidget() {
               </p>
               <p className="text-sm text-muted-foreground">{weather.condition}</p>
             </div>
+            {saveWarning ? (
+              <p className="text-sm text-destructive">{saveWarning}</p>
+            ) : null}
             <div className="grid grid-cols-5 gap-2">
               {weather.forecast.map((day) => (
                 <div
@@ -190,27 +224,4 @@ function formatWeekday(isoDate: string): string {
   return new Date(`${isoDate}T12:00:00`).toLocaleDateString(undefined, {
     weekday: "short",
   });
-}
-
-function readSavedLocation(): SavedLocation | null {
-  try {
-    const raw = window.localStorage.getItem(LOCATION_STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as SavedLocation;
-    if (
-      typeof parsed.lat === "number" &&
-      typeof parsed.lon === "number" &&
-      Number.isFinite(parsed.lat) &&
-      Number.isFinite(parsed.lon)
-    ) {
-      return parsed;
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-function writeSavedLocation(location: SavedLocation) {
-  window.localStorage.setItem(LOCATION_STORAGE_KEY, JSON.stringify(location));
 }

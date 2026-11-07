@@ -2,7 +2,7 @@
 
 Date: 2026-11-07  
 Project: personal-dashboard  
-Status: Pending spec review
+Status: Approved for planning
 
 ## Goal
 

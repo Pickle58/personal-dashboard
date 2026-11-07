@@ -7,6 +7,8 @@ import {
   normalizeNote,
   parseNotes,
   saveNotes,
+  validateImportNote,
+  validateNoteFields,
 } from "@/lib/notes";
 
 describe("NOTE_COLORS", () => {
@@ -95,6 +97,44 @@ describe("parseNotes", () => {
         updatedAt: 9,
       },
     ]);
+  });
+});
+
+describe("validateNoteFields", () => {
+  it("allows an empty title and the five colors", () => {
+    expect(
+      validateNoteFields({ title: "", body: "Hello", color: "emerald" })
+    ).toEqual({ ok: true, title: "", body: "Hello", color: "emerald" });
+  });
+
+  it("rejects an over-long title, an over-long body, and a bad color", () => {
+    expect(
+      validateNoteFields({ title: "a".repeat(201), body: "", color: "slate" })
+    ).toEqual({ ok: false, error: "Keep the title to 200 characters." });
+    expect(
+      validateNoteFields({
+        title: "",
+        body: "a".repeat(20_001),
+        color: "slate",
+      })
+    ).toEqual({ ok: false, error: "Keep the note to 20,000 characters." });
+    expect(
+      validateNoteFields({ title: "", body: "", color: "purple" }).ok
+    ).toBe(false);
+  });
+});
+
+describe("validateImportNote", () => {
+  it("drops a note whose color is not one of the five", () => {
+    expect(
+      validateImportNote({
+        id: "1",
+        title: "Hi",
+        body: "",
+        color: "purple",
+        updatedAt: 1,
+      })
+    ).toBeNull();
   });
 });
 
